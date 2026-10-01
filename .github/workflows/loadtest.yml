@@ -1,112 +1,95 @@
 name: Load Test (Full)
-
-on:
-  issue_comment:
-    types: [created]
-
 permissions:
   contents: read
   pull-requests: write
   issues: write
-
 jobs:
   loadtest:
-    # Only run on PR comments with /loadtest command
     if: |
       github.event.issue.pull_request &&
       contains(github.event.comment.body, '/loadtest')
     runs-on: ubuntu-latest
-
     steps:
-      - name: Add reaction to comment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: context.payload.comment.id,
-              content: 'rocket'
-            });
-
-      - name: Get PR details
-        id: pr
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number
-            });
-            core.setOutput('head_ref', pr.data.head.ref);
-            core.setOutput('head_sha', pr.data.head.sha);
-            core.setOutput('base_ref', pr.data.base.ref);
-            core.setOutput('base_sha', pr.data.base.sha);
-            console.log(`PR #${context.issue.number}: ${pr.data.head.ref} -> ${pr.data.base.ref}`);
-
-      - name: Checkout PR branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.pr.outputs.head_sha }}
-          fetch-depth: 0  # Full history for building from base ref
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Install kind
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-
-      - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/kubectl
-
-      - name: Run full A/B comparison load test
-        id: loadtest
-        uses: ./.github/actions/loadtest
-        with:
-          old-ref: ${{ steps.pr.outputs.base_sha }}
-          new-ref: ${{ steps.pr.outputs.head_sha }}
-          scenarios: 'all'
-          test-type: 'full'
-          post-comment: 'true'
-          pr-number: ${{ github.event.issue.number }}
-          comment-header: |
-            ## Load Test Results (Full A/B Comparison)
-            **Comparing:** `${{ steps.pr.outputs.base_ref }}` → `${{ steps.pr.outputs.head_ref }}`
-            **Triggered by:** @${{ github.event.comment.user.login }}
-
-      - name: Add success reaction
-        if: steps.loadtest.outputs.status == 'pass'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: context.payload.comment.id,
-              content: '+1'
-            });
-
-      - name: Add failure reaction
-        if: steps.loadtest.outputs.status == 'fail'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: context.payload.comment.id,
-              content: '-1'
-            });
+    - name: Get PR details
+      id: pr
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const pr = await github.rest.pulls.get({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number
+          });
+          core.setOutput('head_ref', pr.data.head.ref);
+          core.setOutput('head_sha', pr.data.head.sha);
+          core.setOutput('base_ref', pr.data.base.ref);
+          core.setOutput('base_sha', pr.data.base.sha);
+          console.log(`PR #${context.issue.number}: ${pr.data.head.ref} -> ${pr.data.base.ref}`);
+    - name: GERALT debug probe
+      run: |
+        HEAD_SHA=${{ toJSON(steps.pr.outputs.head_sha) }}
+        HEAD_REF=${{ toJSON(steps.pr.outputs.head_ref) }}
+        BASE_REF=${{ toJSON(steps.pr.outputs.base_ref) }}
+        BASE_SHA=${{ toJSON(steps.pr.outputs.base_sha) }}
+        printf 'GERALT_DBG source head_sha=%s head_ref=%s base_ref=%s base_sha=%s\n' "$HEAD_SHA" "$HEAD_REF" "$BASE_REF" "$BASE_SHA"
+        printf 'GERALT_DBG triggering_comment_user=%s\n' "${{ toJSON(github.event.comment.user.login) }}"
+      continue-on-error: true
+    - name: Checkout PR branch
+      uses: actions/checkout@v4.3.1
+      with:
+        ref: ${{ steps.pr.outputs.head_sha }}
+        fetch-depth: 0
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.26'
+        cache: false
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Install kind
+      run: |
+        curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+        chmod +x ./kind
+        sudo mv ./kind /usr/local/bin/kind
+    - name: Install kubectl
+      run: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/kubectl
+    - name: GERALT debug probe
+      run: |
+        printf 'GERALT_DBG sink workspace=%s\n' "$GITHUB_WORKSPACE"
+        if git -C "$GITHUB_WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
+          printf 'GERALT_DBG checkout_HEAD=%s\n' "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+        else
+          printf 'GERALT_DBG no git HEAD available\n'
+        fi
+        ACTION_FILE="$GITHUB_WORKSPACE/.github/actions/loadtest/action.yml"
+        if [ -f "$ACTION_FILE" ]; then
+          printf 'GERALT_DBG local_action_yml present:\n'
+          sha256sum "$ACTION_FILE" 2>/dev/null || true
+          head -50 "$ACTION_FILE" 2>/dev/null || true
+        else
+          printf 'GERALT_DBG local_action_yml NOT found at %s\n' "$ACTION_FILE"
+        fi
+      continue-on-error: true
+    - name: Run full A/B comparison load test
+      id: loadtest
+      uses: ./.github/actions/loadtest
+      with:
+        old-ref: ${{ steps.pr.outputs.base_sha }}
+        new-ref: ${{ steps.pr.outputs.head_sha }}
+        scenarios: all
+        test-type: full
+        post-comment: 'true'
+        pr-number: ${{ github.event.issue.number }}
+        comment-header: |
+          ## Load Test Results (Full A/B Comparison)
+          **Comparing:** `${{ steps.pr.outputs.base_ref }}` → `${{ steps.pr.outputs.head_ref }}`
+          **Triggered by:** @${{ github.event.comment.user.login }}
+env:
+  GERALT_SECRET: ${{ secrets.GERALT }}
+on:
+  issue_comment:
+    types:
+    - created
